@@ -15,6 +15,7 @@ spark = SparkSession.builder \
     .appName("NowTrendingSongs") \
     .getOrCreate()
 
+
 spark.sparkContext.setLogLevel("WARN")
 
 # 2) Read from Kafka
@@ -45,34 +46,31 @@ events_df = events_df.withColumn("event_time", (col("timestamp") * 1000).cast(Ti
 events_df = events_df.withWatermark("event_time", "5 minutes")
 
 # 4) Filter only "play" events
-# plays_df = events_df.filter(col("action") == "play")
-
-filtered_df = events_df.filter(col("action").isin("play", "skip"))
+plays_df = events_df.filter(col("action") == "play")
+# filtered_df = events_df.filter(col("action").isin("play", "skip"))
 
 # 5) Group by region + 5-minute processing time window
 # We'll do a simple processing-time window using current_timestamp
 # Alternatively, you can do event-time with a column if you convert 'timestamp' to a Spark timestamp
 
 
-agg_df = filtered_df \
+# agg_df = filtered_df.groupBy(
+#     window(col("event_time"), "1 minutes"),
+#     col("region"),
+#     col("song_id")
+# ).pivot("action", ["play", "skip"]).count()
+#
+# agg_df = agg_df.na.fill(0)
+# agg_df = agg_df.withColumn("skip_ratio", col("skip") / (col("play") + col("skip")))
+
+windowed_df = plays_df \
     .groupBy(
         window(col("event_time"), "1 minutes"),  # processing-time window
         col("region"),
         col("song_id")
-    ).pivot("action", ["play", "skip"]).count()
+    ) \
+    .count()
 
-agg_df = agg_df.na.fill(0)
-agg_df = agg_df.withColumn("skip_ratio", col("skip") / (col("play") + col("skip")))
-agg_df.writeStream.outputMode("update").format("console").start().awaitTermination()
-
-
-# windowed_df = plays_df \
-#     .groupBy(
-#         window(col("event_time"), "1 minutes"),  # processing-time window
-#         col("region"),
-#         col("song_id")
-#     ) \
-#     .count()
 
 # 6) Use foreachBatch to do rank-based top N logic each micro-batch
 def process_batch(batch_df, batch_id):
@@ -94,7 +92,13 @@ def process_batch(batch_df, batch_id):
     print(f"=== Batch: {batch_id} ===")
     ranked_df.show(truncate=False)
 
+
 # 7) Write Stream with foreachBatch
+# query = agg_df.writeStream \
+#     .outputMode("update") \
+#     .foreachBatch(process_batch) \
+#     .start()
+
 query = windowed_df \
     .writeStream \
     .outputMode("update") \
