@@ -7,6 +7,8 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 from pyspark.sql.types import TimestampType
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number
+from pyspark.sql.functions import current_timestamp
+
 
 # 1) Create SparkSession
 spark = SparkSession.builder \
@@ -39,23 +41,38 @@ events_df = parsed_df.select("data.*")
 # Convert timestamp double -> actual timestamp if we want event time
 # But for simplicity, let's do a processing-time approach
 # If you want event-time windows, do:
-# events_df = events_df.withColumn("event_time", (col("timestamp") * 1000).cast(TimestampType()))
+events_df = events_df.withColumn("event_time", (col("timestamp") * 1000).cast(TimestampType()))
+events_df = events_df.withWatermark("event_time", "5 minutes")
 
 # 4) Filter only "play" events
-plays_df = events_df.filter(col("action") == "play")
+# plays_df = events_df.filter(col("action") == "play")
+
+filtered_df = events_df.filter(col("action").isin("play", "skip"))
 
 # 5) Group by region + 5-minute processing time window
 # We'll do a simple processing-time window using current_timestamp
 # Alternatively, you can do event-time with a column if you convert 'timestamp' to a Spark timestamp
-from pyspark.sql.functions import current_timestamp
 
-windowed_df = plays_df \
+
+agg_df = filtered_df \
     .groupBy(
-        window(current_timestamp(), "5 minutes"),  # processing-time window
+        window(col("event_time"), "1 minutes"),  # processing-time window
         col("region"),
         col("song_id")
-    ) \
-    .count()
+    ).pivot("action", ["play", "skip"]).count()
+
+agg_df = agg_df.na.fill(0)
+agg_df = agg_df.withColumn("skip_ratio", col("skip") / (col("play") + col("skip")))
+agg_df.writeStream.outputMode("update").format("console").start().awaitTermination()
+
+
+# windowed_df = plays_df \
+#     .groupBy(
+#         window(col("event_time"), "1 minutes"),  # processing-time window
+#         col("region"),
+#         col("song_id")
+#     ) \
+#     .count()
 
 # 6) Use foreachBatch to do rank-based top N logic each micro-batch
 def process_batch(batch_df, batch_id):
